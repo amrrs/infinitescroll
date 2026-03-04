@@ -68,6 +68,7 @@ export const App = () => {
   const [loading, setLoading] = useState(false);
   const [tickerCount, setTickerCount] = useState(TICKER_BASE);
   const [heroWordIdx, setHeroWordIdx] = useState(0);
+  const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const sessionId = useRef(getSessionId());
   const loadCooldown = useRef(false);
@@ -87,11 +88,13 @@ export const App = () => {
     return () => clearInterval(interval);
   }, []);
 
-  function safeSend(data: object) {
+  function safeSend(data: object): boolean {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(data));
+      return true;
     }
+    return false;
   }
 
   useEffect(() => {
@@ -122,24 +125,28 @@ export const App = () => {
           });
         } else if (msg.type === "feed_state") {
           const feed = msg.feed as { theme: string; images: Array<{ index: number; prompt: string; status: string; imageUrl: string | null }> };
-          setTheme(feed.theme || "");
-          setImages((prev) => {
-            const prevMap = new Map(prev.map((i) => [i.index, i]));
-            return feed.images.map((img) => {
-              const existing = prevMap.get(img.index);
-              return {
-                index: img.index,
-                prompt: img.prompt || existing?.prompt || "",
-                status: (img.imageUrl ? "ready" : img.status) as ImageViewModel["status"],
-                image: img.imageUrl || existing?.image || null
-              };
+          if (feed.theme) setTheme(feed.theme);
+          // Only update images array if the server actually has images.
+          // An empty feed_state (after reset) should not wipe optimistic placeholders.
+          if (feed.images.length > 0) {
+            setImages((prev) => {
+              const prevMap = new Map(prev.map((i) => [i.index, i]));
+              return feed.images.map((img) => {
+                const existing = prevMap.get(img.index);
+                return {
+                  index: img.index,
+                  prompt: img.prompt || existing?.prompt || "",
+                  status: (img.imageUrl ? "ready" : img.status) as ImageViewModel["status"],
+                  image: img.imageUrl || existing?.image || null
+                };
+              });
             });
-          });
-          if (loadWatchdog.current) {
-            clearTimeout(loadWatchdog.current);
-            loadWatchdog.current = null;
+            if (loadWatchdog.current) {
+              clearTimeout(loadWatchdog.current);
+              loadWatchdog.current = null;
+            }
+            setLoading(false);
           }
-          setLoading(false);
         } else if (msg.type === "image_update") {
           const prompt = msg.prompt as string;
           setImages((prev) => {
@@ -225,17 +232,62 @@ export const App = () => {
   }, []);
 
   const handlePrompt = useCallback((text: string) => {
-    setImages([]);
+    if (!referenceImage) {
+      setLastError("Please add a reference image first — Flux 2 Klein requires one.");
+      setTimeout(() => setLastError(null), 4000);
+      return;
+    }
+    const optimistic = Array.from({ length: 3 }, (_, idx) => ({
+      index: idx,
+      prompt: "",
+      status: "pending" as ImageViewModel["status"],
+      image: null
+    }));
+    setImages(optimistic);
     setTheme(text);
     setLoading(true);
-    safeSend({ type: "user_prompt", text });
+    const sent = safeSend({ type: "user_prompt", text, referenceImage });
+    if (!sent) {
+      setLoading(false);
+      setLastError("Connection not ready yet. Reconnecting to server...");
+      setTimeout(() => setLastError(null), 4000);
+      return;
+    }
+    if (loadWatchdog.current) clearTimeout(loadWatchdog.current);
+    loadWatchdog.current = setTimeout(() => {
+      setLoading(false);
+      setLastError("Still generating prompts... please try again.");
+      setTimeout(() => setLastError(null), 4000);
+    }, 12000);
+    // Keep reference on backend for this run; clear local picker for next fresh prompt.
+    setReferenceImage(null);
+  }, [referenceImage]);
+
+  const handleReferencePick = useCallback((file: File | null) => {
+    if (!file) {
+      setReferenceImage(null);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : null;
+      setReferenceImage(result);
+    };
+    reader.readAsDataURL(file);
   }, []);
 
   const handleLoadMore = useCallback(() => {
     if (loading || loadCooldown.current) return;
     loadCooldown.current = true;
     setLoading(true);
-    safeSend({ type: "load_more", count: 6 });
+    const sent = safeSend({ type: "load_more", count: 6 });
+    if (!sent) {
+      setLoading(false);
+      loadCooldown.current = false;
+      setLastError("Connection not ready yet. Reconnecting to server...");
+      setTimeout(() => setLastError(null), 4000);
+      return;
+    }
     setTimeout(() => { loadCooldown.current = false; }, 1200);
     if (loadWatchdog.current) clearTimeout(loadWatchdog.current);
     loadWatchdog.current = setTimeout(() => {
@@ -339,8 +391,31 @@ export const App = () => {
 
             {/* 3. Unified search & pills */}
             <div className="search-widget">
-              <div className="search-input-wrapper">
-                <ChatInput onSubmit={handlePrompt} placeholder="Search or describe your own theme..." />
+              <div className="composer-grid">
+                <div className="reference-uploader">
+                  <label className="reference-btn" htmlFor="reference-image-input">
+                    {referenceImage ? "Change reference image" : "Add reference image"}
+                  </label>
+                  <input
+                    id="reference-image-input"
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => handleReferencePick(event.target.files?.[0] ?? null)}
+                  />
+                  {referenceImage ? (
+                    <div className="reference-preview">
+                      <img src={referenceImage} alt="Reference preview" />
+                      <button type="button" onClick={() => setReferenceImage(null)}>
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="reference-empty">Drop a guide image here</div>
+                  )}
+                </div>
+                <div className="search-input-wrapper">
+                  <ChatInput onSubmit={handlePrompt} placeholder="Search or describe your own theme..." />
+                </div>
               </div>
               <div className="search-suggestions">
                 <span className="suggestions-label">Try:</span>

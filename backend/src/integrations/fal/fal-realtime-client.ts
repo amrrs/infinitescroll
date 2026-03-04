@@ -6,13 +6,16 @@ export type FalImageJob = {
   prompt: string;
   priority: 1 | 2 | 3;
   seed: number;
+  referenceImageUrl?: string;
   attempts?: number;
 };
 
 type OnImage = (job: FalImageJob, imageData: string) => void;
 type OnError = (job: FalImageJob, error: Error) => void;
 
-const FAL_MODEL = "fal-ai/flux/schnell";
+const FAL_REALTIME_APP = "fal-ai/flux-2/klein/realtime";
+const EMPTY_IMAGE_DATA_URI =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axXxK4AAAAASUVORK5CYII=";
 
 export class FalRealtimeTileClient {
   private readonly queues: Record<1 | 2 | 3, FalImageJob[]> = { 1: [], 2: [], 3: [] };
@@ -27,7 +30,7 @@ export class FalRealtimeTileClient {
   ) {
     if (this.falKey) {
       fal.config({ credentials: this.falKey });
-      console.log("[fal] Configured with", FAL_MODEL);
+      console.log("[fal] Configured realtime app", FAL_REALTIME_APP);
     }
   }
 
@@ -68,19 +71,7 @@ export class FalRealtimeTileClient {
 
     try {
       console.log(`[fal] Generating image #${job.index} (priority ${job.priority})`);
-      const result = await fal.subscribe(FAL_MODEL, {
-        input: {
-          prompt: job.prompt,
-          image_size: "landscape_16_9",
-          num_inference_steps: 4,
-          seed: job.seed,
-          num_images: 1,
-          enable_safety_checker: false
-        }
-      });
-
-      const image = (result.data as { images?: Array<{ url?: string; content?: string }> }).images?.[0];
-      const imageData = image?.url ?? image?.content;
+      const imageData = await this.generateRealtime(job);
       if (!imageData) {
         this.handleFailure(job, new Error("fal returned no image"));
         return;
@@ -95,6 +86,112 @@ export class FalRealtimeTileClient {
       this.active = Math.max(0, this.active - 1);
       this.scheduleDrain();
     }
+  }
+
+  private async generateRealtime(job: FalImageJob): Promise<string | undefined> {
+    return await new Promise<string | undefined>((resolve, reject) => {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { connection.close(); } catch {}
+        reject(new Error("fal realtime timeout"));
+      }, 20000);
+
+      const finalizeResolve = (value: string | undefined) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        try { connection.close(); } catch {}
+        resolve(value);
+      };
+
+      const finalizeReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        try { connection.close(); } catch {}
+        reject(error);
+      };
+
+      const connection = fal.realtime.connect(FAL_REALTIME_APP, {
+        onResult: (result: unknown) => {
+          const imageData = this.extractImageData(result);
+          if (imageData) {
+            finalizeResolve(imageData);
+          }
+        },
+        onError: (error: { message?: string }) => {
+          finalizeReject(new Error(error?.message ?? "fal realtime error"));
+        }
+      });
+
+      try {
+        const refUrl = job.referenceImageUrl!;
+        const refSize = refUrl.length > 100 ? `${Math.round(refUrl.length / 1024)}KB data-uri` : refUrl.slice(0, 60);
+        const payload: Record<string, unknown> = {
+          prompt: job.prompt,
+          image_url: refUrl,
+          image_size: "square_hd",
+          num_inference_steps: 2,
+          schedule_mu: 1.2,
+          seed: job.seed
+        };
+        console.log(`[fal] Sending job #${job.index}: ref=${refSize}, steps=2, mu=1.2`);
+        console.log(`[fal]   prompt: "${job.prompt.slice(0, 100)}..."`);
+        connection.send(payload);
+      } catch (error) {
+        finalizeReject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  private extractImageData(result: unknown): string | undefined {
+    const maybe = result as {
+      images?: Array<unknown>;
+      output?: { images?: Array<unknown> };
+      data?: { images?: Array<unknown> };
+    };
+    const image =
+      maybe.images?.[0] ??
+      maybe.output?.images?.[0] ??
+      maybe.data?.images?.[0];
+    if (!image) return undefined;
+
+    if (typeof image === "string") return image;
+    if (typeof image === "object" && image !== null) {
+      const record = image as Record<string, unknown>;
+      const url = record.url;
+      const content = record.content;
+      if (typeof url === "string") return url;
+
+      const normalized = this.normalizeContentToBase64(content);
+      if (normalized) return normalized;
+    }
+    return undefined;
+  }
+
+  private normalizeContentToBase64(content: unknown): string | undefined {
+    if (typeof content === "string") return content;
+
+    if (content instanceof Uint8Array) {
+      return Buffer.from(content).toString("base64");
+    }
+
+    if (ArrayBuffer.isView(content)) {
+      const view = content as ArrayBufferView;
+      return Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString("base64");
+    }
+
+    if (content instanceof ArrayBuffer) {
+      return Buffer.from(content).toString("base64");
+    }
+
+    if (Array.isArray(content) && content.every((v) => typeof v === "number")) {
+      return Buffer.from(content).toString("base64");
+    }
+
+    return undefined;
   }
 
   private handleFailure(job: FalImageJob, error: Error) {

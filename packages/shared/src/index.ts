@@ -31,7 +31,8 @@ export type SessionInitEvent = z.infer<typeof SessionInitEventSchema>;
 
 export const UserPromptEventSchema = z.object({
   type: z.literal("user_prompt"),
-  text: z.string().min(1)
+  text: z.string().min(1),
+  referenceImage: z.string().optional()
 });
 export type UserPromptEvent = z.infer<typeof UserPromptEventSchema>;
 

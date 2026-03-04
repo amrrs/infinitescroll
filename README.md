@@ -1,6 +1,6 @@
 # Infinite Scroll
 
-An endless AI image feed powered by **OpenAI Responses WebSocket** (prompt generation) and **fal.ai** (Flux Schnell image generation). Describe a theme and scroll through a never-ending stream of AI-generated images.
+An endless AI image feed powered by **OpenAI Responses WebSocket** (prompt generation) and **fal.ai Flux 2 Klein Realtime WebSocket** (image generation). Describe a theme and scroll through a never-ending stream of AI-generated images.
 
 ## Architecture
 
@@ -21,8 +21,8 @@ An endless AI image feed powered by **OpenAI Responses WebSocket** (prompt gener
 │                               │  │  └────────────────────┘  │    │  │
 │                               │  │                          │    │  │
 │                               │  │  ┌────────────────────┐  │    │  │
-│                               │  │  │  fal.ai Client      │──┼────┼──► fal.ai HTTP API
-│                               │  │  │  (Priority Queue)   │◄─┼────┼──  (Flux Schnell)
+│                               │  │  │  fal.ai Realtime    │──┼────┼──► wss://fal.run
+│                               │  │  │  (Priority Queue)   │◄─┼────┼──  (Flux 2 Klein)
 │                               │  │  │  [3 concurrent]     │  │    │  │
 │                               │  │  └────────────────────┘  │    │  │
 │                               │  └──────────────────────────┘    │  │
@@ -58,16 +58,16 @@ The backend maintains a persistent WebSocket to OpenAI's Responses API. This is 
 - Maintains conversation context via `previous_response_id` chaining
 - Auto-reconnects and rotates connections before the 60-minute limit
 
-#### 3. Backend → fal.ai (HTTP API with priority queue)
+#### 3. Backend ↔ fal.ai Realtime WebSocket (`fal-ai/flux-2/klein/realtime`)
 
-fal.ai uses **HTTP** (via `fal.subscribe()`) — not a WebSocket. The backend wraps it in a priority queue with concurrency control to manage throughput:
+fal.ai uses **Realtime WebSockets** (via `fal.realtime.connect()`). The backend wraps it in a priority queue with concurrency control to manage throughput:
 
 - **Priority 1**: First batch of images (user just typed a prompt)
 - **Priority 2**: Load-more batches (infinite scroll)
 - **Priority 3**: Background/low-priority
 - **Concurrency**: 3 parallel image generations
 - **Retries**: Up to 3 attempts with exponential backoff
-- **Model**: Flux Schnell — ~2-4 seconds per image
+- **Model**: Flux 2 Klein Realtime
 
 The frontend shows **"OpenAI Live"** and **"fal Live"** badges in the top bar. The backend sends `connection_status` events so the UI reflects the real-time state of both services.
 
@@ -93,7 +93,7 @@ The frontend shows **"OpenAI Live"** and **"fal Live"** badges in the top bar. T
    and queues 6 fal.ai jobs (3 run concurrently)
        │
        ▼
-6. fal.ai generates each image with Flux Schnell (~2-4s each)
+6. fal.ai generates each image via Flux 2 Klein Realtime WebSocket
        │
        ▼
 7. As each image completes, backend sends:
@@ -140,7 +140,7 @@ The frontend shows **"OpenAI Live"** and **"fal Live"** badges in the top bar. T
 |----------|------|
 | Frontend | React 18, Vite 5, TypeScript |
 | Backend  | Express, ws (WebSocket), TypeScript |
-| AI       | OpenAI Responses WebSocket (GPT-4.1), fal.ai Flux Schnell |
+| AI       | OpenAI Responses WebSocket (GPT-4.1), fal.ai Flux 2 Klein Realtime |
 | Shared   | Zod schemas, TypeScript |
 
 ## Setup

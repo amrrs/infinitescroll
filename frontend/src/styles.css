@@ -306,6 +306,97 @@ body { overflow: hidden; }
   animation: fadeUp 0.4s ease-out;
 }
 
+.composer-grid {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.reference-uploader {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.reference-uploader input[type="file"] {
+  display: none;
+}
+
+.reference-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  background: rgba(20, 184, 166, 0.14);
+  color: #ccfbf1;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.reference-btn:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.reference-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.reference-preview img {
+  width: 76px;
+  height: 76px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.reference-preview button {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.reference-preview button:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.reference-empty {
+  flex: 1;
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 8px;
+}
+
 .search-input-wrapper .chat-form {
   background: rgba(255,255,255,0.02);
   border: 1px solid rgba(255,255,255,0.12);
@@ -806,6 +897,7 @@ body { overflow: hidden; }
   .feed-image-wrap { padding: 10px 10px; margin-top: 10px; }
   .feed-info { padding: 10px 12px 14px; }
   .search-suggestions { flex-direction: column; align-items: stretch; padding: 0 12px; }
+  .composer-grid { grid-template-columns: 1fr; }
   .suggestions-label { margin-bottom: -2px; }
   .top-actions { gap: 6px; }
   .top-cta-btn { padding: 6px 10px; font-size: 12px; }
