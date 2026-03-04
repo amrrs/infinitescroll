@@ -3,7 +3,9 @@ import { ChatInput } from "../features/chat/ChatInput";
 import { ScrollFeed } from "../features/feed/ScrollFeed";
 import type { ImageViewModel } from "../features/tiles/tile-store";
 
-const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/feed`;
+const DEV_BACKEND = "ws://localhost:8787/feed";
+const PROD_WS = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/feed`;
+const WS_URL = import.meta.env.DEV ? DEV_BACKEND : PROD_WS;
 
 function getSessionId(): string {
   let id = localStorage.getItem("is.sid");
