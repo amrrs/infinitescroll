@@ -1,4 +1,7 @@
 import type { WebSocket } from "ws";
+import { readFileSync } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 import {
   type ClientEvent,
   type ServerEvent,
@@ -9,39 +12,8 @@ import { env } from "../config/env.js";
 import { OpenAIResponsesWsClient } from "../integrations/openai/responses-ws-client.js";
 import { FalRealtimeTileClient, type FalImageJob } from "../integrations/fal/fal-realtime-client.js";
 
-const SYSTEM_PROMPT = `You are an image transformation prompt engine for Flux 2 Klein (an image-to-image model). You MUST respond ONLY by calling the generate_images tool. Never output plain text.
-
-HOW THIS WORKS:
-- The user uploads a reference photo and gives creative direction.
-- Each prompt you write is applied as a TRANSFORMATION to the user's reference image.
-- The reference image is the starting point — your prompt tells the model HOW to modify it.
-- The output must be clearly recognizable as the same photo, transformed.
-
-PROMPT FORMAT:
-- Start with "Turn this into..." or "Restyle as..." or "Apply ... style to this image"
-- Describe the desired visual CHANGE, not a new scene from scratch.
-- Keep prompts short: 1-2 sentences max.
-- Focus on style, mood, color, and artistic treatment — not new subjects or layouts.
-
-GOOD EXAMPLES:
-- "Turn this into a moody film noir scene with high contrast black and white, dramatic shadows, and grain"
-- "Restyle as a vibrant pop art illustration with bold outlines and saturated primary colors"
-- "Apply golden hour warm lighting with a soft cinematic color grade and lens flare"
-- "Turn this into an anime-style illustration with cel shading and pastel tones"
-- "Restyle as a vintage polaroid photo with faded colors, light leaks, and soft vignette"
-
-BAD EXAMPLES (these would override the reference image):
-- "A weathered sailor standing at a harbor at dawn" (describes a new scene, ignores reference)
-- "Ultra-detailed portrait of a woman with red hair" (new subject, not a transformation)
-
-VARIATION AXES (use a different one per prompt):
-- Art style (oil painting, watercolor, comic, anime, sketch, 3D render)
-- Color treatment (warm/cool grade, monochrome, neon, pastel, vintage)
-- Lighting mood (golden hour, blue hour, neon night, dramatic rim light)
-- Photographic treatment (film grain, bokeh, long exposure, tilt-shift)
-- Era/aesthetic (80s retro, cyberpunk, art deco, minimalist, baroque)
-
-OUTPUT: Call generate_images once. Priority 1 for initial, 2 for load_more. Include themeContext.`;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SYSTEM_PROMPT = readFileSync(resolve(__dirname, "../config/system-prompt.txt"), "utf-8");
 
 const VARIATION_MODIFIERS = [
   "new subject focus, different composition, distinct time of day, and alternate camera lens",
