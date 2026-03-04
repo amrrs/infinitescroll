@@ -305,6 +305,13 @@ export const App = () => {
     setImages([]);
     setTheme("");
     setLoading(false);
+    setReferenceImage(null);
+    setLastError(null);
+    loadCooldown.current = false;
+    if (loadWatchdog.current) {
+      clearTimeout(loadWatchdog.current);
+      loadWatchdog.current = null;
+    }
   }, []);
 
   return (
@@ -347,7 +354,7 @@ export const App = () => {
               <span>fal</span>
             </span>
           </div>
-          <button type="button" className="top-cta-btn">Create free feed</button>
+          <button type="button" className="top-cta-btn" onClick={handleGoHome}>Create free feed</button>
         </div>
       </header>
 

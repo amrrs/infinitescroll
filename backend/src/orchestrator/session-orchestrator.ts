@@ -9,26 +9,37 @@ import { env } from "../config/env.js";
 import { OpenAIResponsesWsClient } from "../integrations/openai/responses-ws-client.js";
 import { FalRealtimeTileClient, type FalImageJob } from "../integrations/fal/fal-realtime-client.js";
 
-const SYSTEM_PROMPT = `You are a Flux image prompt expansion engine. You MUST respond ONLY by calling the generate_images tool. Never output plain text.
+const SYSTEM_PROMPT = `You are an image transformation prompt engine for Flux 2 Klein (an image-to-image model). You MUST respond ONLY by calling the generate_images tool. Never output plain text.
 
-The user provides creative direction + a reference image. Each prompt you generate will be used for image-to-image generation on that reference. The output images should be recognizable variations of the reference photo.
+HOW THIS WORKS:
+- The user uploads a reference photo and gives creative direction.
+- Each prompt you write is applied as a TRANSFORMATION to the user's reference image.
+- The reference image is the starting point — your prompt tells the model HOW to modify it.
+- The output must be clearly recognizable as the same photo, transformed.
 
-PROMPT RULES:
-- Write natural language scene descriptions (2-4 sentences each, under 150 tokens).
-- Front-load the main subject. Priority: Subject -> Action -> Style -> Context -> Details.
-- Use active language: "A mountain emerges from mist" not "mountain with mist."
-- Be specific with details: lighting, camera angle, lens, color palette, mood.
-- Do NOT use generic filler ("ultra-detailed", "high quality", "8k").
-- Do NOT copy the user's input text verbatim. Transform and expand it.
-- Positive phrasing only (Flux has no negative prompts).
+PROMPT FORMAT:
+- Start with "Turn this into..." or "Restyle as..." or "Apply ... style to this image"
+- Describe the desired visual CHANGE, not a new scene from scratch.
+- Keep prompts short: 1-2 sentences max.
+- Focus on style, mood, color, and artistic treatment — not new subjects or layouts.
 
-VARIATION AXES (use a different axis per prompt):
-- Camera distance/lens (wide, macro, telephoto, aerial)
-- Lighting (golden hour, neon night, overcast, studio, dramatic rim)
-- Mood/emotion (serene, intense, playful, moody, nostalgic)
-- Environment/time (dawn, dusk, rain, fog, interior, exterior)
-- Color palette (warm, cool, monochrome, complementary, saturated)
-- Composition (close-up, rule-of-thirds, centered, diagonal, over-shoulder)
+GOOD EXAMPLES:
+- "Turn this into a moody film noir scene with high contrast black and white, dramatic shadows, and grain"
+- "Restyle as a vibrant pop art illustration with bold outlines and saturated primary colors"
+- "Apply golden hour warm lighting with a soft cinematic color grade and lens flare"
+- "Turn this into an anime-style illustration with cel shading and pastel tones"
+- "Restyle as a vintage polaroid photo with faded colors, light leaks, and soft vignette"
+
+BAD EXAMPLES (these would override the reference image):
+- "A weathered sailor standing at a harbor at dawn" (describes a new scene, ignores reference)
+- "Ultra-detailed portrait of a woman with red hair" (new subject, not a transformation)
+
+VARIATION AXES (use a different one per prompt):
+- Art style (oil painting, watercolor, comic, anime, sketch, 3D render)
+- Color treatment (warm/cool grade, monochrome, neon, pastel, vintage)
+- Lighting mood (golden hour, blue hour, neon night, dramatic rim light)
+- Photographic treatment (film grain, bokeh, long exposure, tilt-shift)
+- Era/aesthetic (80s retro, cyberpunk, art deco, minimalist, baroque)
 
 OUTPUT: Call generate_images once. Priority 1 for initial, 2 for load_more. Include themeContext.`;
 
@@ -164,17 +175,14 @@ export class SessionOrchestrator {
       // Fire the first image immediately so the user sees something fast.
       this.submitImmediateFirstImage(sessionId, event.text);
 
-      // Then let OpenAI expand 5 more varied prompts in parallel.
+      // Ask OpenAI for 3 more (we already submitted 3 immediate ones above).
       try {
         const diversityHint = this.buildDiversityHint(session.feed);
         await session.openai.enqueueUserMessage(
-          `Generate 5 more variations. The user's creative direction is: "${event.text}"
-The user uploaded a reference image. All prompts must describe VARIATIONS of that reference — same core subject but explored from different angles, lighting, moods, and compositions.
-RULES:
-- Treat the user text as guidance, not literal text to copy.
-- Each prompt: 2-4 sentences of natural language scene description.
-- Vary along distinct axes: camera angle, lighting, mood, environment, color palette.
-- You MUST call generate_images exactly once with 5 prompts.
+          `Generate 3 transformation prompts for the user's reference image.
+Direction: "${event.text}"
+Each prompt transforms the uploaded photo. Write 1-2 sentence prompts starting with "Turn this into..." or "Restyle as...".
+Call generate_images once with 3 prompts.
 ${diversityHint}`,
           SYSTEM_PROMPT
         );
@@ -198,12 +206,12 @@ ${diversityHint}`,
       }
       try {
         await session.openai.enqueueUserMessage(
-          `Generate ${event.count} more images continuing the "${theme}" theme.
-We already have ${imageCount} images.
-MANDATORY: Every new prompt must be meaningfully different from prior prompts and from each other.
-Avoid repeated nouns, duplicated scene setups, and near-identical camera framing.
-Behave as a prompt expansion engine: push the concept into fresh but on-theme directions.
-Avoid generic quality boilerplate unless needed for a specific visual intent.
+          `Generate ${event.count} more transformation prompts for the user's reference image.
+Theme: "${theme}". We already have ${imageCount} variations.
+Each prompt transforms the SAME reference photo with a new artistic treatment.
+Write short prompts (1-2 sentences) starting with "Turn this into..." or "Restyle as...".
+Every prompt must be a distinctly different visual treatment from prior ones.
+Call generate_images exactly once.
 ${diversityHint}`,
           SYSTEM_PROMPT
         );
@@ -350,20 +358,26 @@ ${diversityHint}`,
     const session = this.sessions.get(sessionId);
     if (!session || !session.referenceImageUrl) return;
 
-    const firstPrompt = `${theme}. Faithful to the reference image with minor creative enhancement.`;
-    const slot = session.feed.allocateSlot(firstPrompt);
-    this.emit(sessionId, { type: "image_status", index: slot.index, status: "generating" });
-    this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
+    const immediatePrompts = [
+      `Turn this into a refined version with enhanced lighting and polished details inspired by: ${theme}`,
+      `Restyle as a cinematic scene with dramatic color grading and moody atmosphere, guided by: ${theme}`,
+      `Apply a bold artistic transformation with vibrant colors and stylized rendering inspired by: ${theme}`
+    ];
 
-    const job: FalImageJob = {
-      sessionId,
-      index: slot.index,
-      prompt: firstPrompt,
-      priority: 1,
-      referenceImageUrl: session.referenceImageUrl,
-      seed: Math.floor(Math.random() * 1_000_000)
-    };
-    this.fal.submit(job);
+    for (const prompt of immediatePrompts) {
+      const slot = session.feed.allocateSlot(prompt);
+      this.emit(sessionId, { type: "image_status", index: slot.index, status: "generating" });
+      this.fal.submit({
+        sessionId,
+        index: slot.index,
+        prompt,
+        priority: 1,
+        referenceImageUrl: session.referenceImageUrl,
+        seed: Math.floor(Math.random() * 1_000_000) + slot.index
+      });
+    }
+
+    this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
   }
 
   private scheduleFollowupFallback(sessionId: string, theme: string, count = 5, baselineCount = 0) {
