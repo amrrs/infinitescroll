@@ -8,6 +8,7 @@ export type FalImageJob = {
   seed: number;
   referenceImageUrl?: string;
   attempts?: number;
+  generation?: number;
 };
 
 type OnImage = (job: FalImageJob, imageData: string) => void;

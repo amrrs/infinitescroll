@@ -213,7 +213,8 @@ ${diversityHint}`,
         prompt: expandedPrompt,
         priority: 1,
         referenceImageUrl: session.referenceImageUrl,
-        seed: Math.floor(Math.random() * 1_000_000) + slot.index
+        seed: Math.floor(Math.random() * 1_000_000) + slot.index,
+        generation: session.generation
       });
     }
 
@@ -223,6 +224,7 @@ ${diversityHint}`,
   private onFalImage(job: FalImageJob, imageData: string) {
     const session = this.sessions.get(job.sessionId);
     if (!session) return;
+    if (job.generation !== undefined && job.generation !== session.generation) return;
     if (typeof imageData !== "string" || imageData.length === 0) {
       this.onFalError(job, new Error("fal returned invalid image payload"));
       return;
@@ -241,7 +243,7 @@ ${diversityHint}`,
 
   private onFalError(job: FalImageJob, error: Error) {
     const session = this.sessions.get(job.sessionId);
-    if (session) {
+    if (session && (job.generation === undefined || job.generation === session.generation)) {
       session.feed.setStatus(job.index, "failed");
     }
     this.emit(job.sessionId, {
@@ -293,7 +295,8 @@ ${diversityHint}`,
         prompt,
         priority: 1,
         referenceImageUrl: session.referenceImageUrl,
-        seed: Math.floor(Math.random() * 1_000_000) + slot.index
+        seed: Math.floor(Math.random() * 1_000_000) + slot.index,
+        generation: session.generation
       });
     }
 
@@ -329,7 +332,8 @@ ${diversityHint}`,
         prompt,
         priority: 1,
         referenceImageUrl: session.referenceImageUrl,
-        seed: Math.floor(Math.random() * 1_000_000) + slot.index
+        seed: Math.floor(Math.random() * 1_000_000) + slot.index,
+        generation: session.generation
       });
     }
 

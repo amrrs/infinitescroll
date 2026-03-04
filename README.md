@@ -7,20 +7,22 @@ An endless AI image feed. Upload a reference image, describe a direction, and sc
 ## How It Works
 
 1. Upload a **reference image** + type a creative direction
-2. **OpenAI** (via WebSocket) expands your direction into transformation prompts
-3. **Flux 2 Klein** (via fal.ai Realtime WebSocket) applies each prompt to your reference image
-4. Scroll down — more variations generate as you go
+2. **OpenAI** (via WebSocket) expands your direction into transformation prompts using structured JSON output
+3. **Flux 2 Klein** (via fal.ai Realtime WebSocket) applies each prompt as an img2img transformation
+4. Scroll down — more variations stream in as you go
 
 ## Architecture
 
 ```
-Browser (React)  ←WebSocket→  Backend (Express)  ←WebSocket→  OpenAI (prompt expansion)
-                                                  ←WebSocket→  fal.ai Flux 2 Klein (img2img)
+Browser (React)  ←WebSocket→  Backend (Express)  ←WebSocket→  OpenAI Responses API (prompt expansion)
+                                                  ←WebSocket→  fal.ai Flux 2 Klein Realtime (img2img)
 ```
 
-- **3 WebSocket connections**: Browser↔Backend, Backend↔OpenAI, Backend↔fal.ai
+- **3 WebSocket connections** — zero HTTP in the core flow
+- **Structured JSON output** from OpenAI (no tool calls) for minimal latency
 - **3 concurrent** image generations via priority queue
-- **Immediate first images** fire before OpenAI responds for fast perceived speed
+- **Immediate first images** fire to fal before OpenAI responds for fast perceived speed
+- **Generation tracking** — reset/home cleanly cancels in-flight jobs
 
 ## Tech Stack
 

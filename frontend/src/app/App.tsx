@@ -318,6 +318,7 @@ export const App = () => {
   const inFeedView = hasImages || loading;
 
   const handleGoHome = useCallback(() => {
+    safeSend({ type: "reset_feed" });
     setImages([]);
     setTheme("");
     setLoading(false);
