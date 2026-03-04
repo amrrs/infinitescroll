@@ -4,8 +4,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
   type ClientEvent,
-  type ServerEvent,
-  GenerateImagesToolSchema
+  type ServerEvent
 } from "@infinitecanvas/shared";
 import { FeedStore } from "../domain/feed/feed-store.js";
 import { env } from "../config/env.js";
@@ -22,63 +21,19 @@ const VARIATION_MODIFIERS = [
   "switch to a different scene narrative and visual style while preserving the theme intent"
 ];
 
-const FALLBACK_VARIATIONS = [
-  "wide cinematic establishing shot, dramatic lighting, highly detailed",
-  "close-up subject focus, shallow depth of field, rich textures",
-  "aerial perspective, layered composition, atmospheric haze",
-  "night-time scene, neon accents, reflective surfaces, moody contrast",
-  "golden-hour lighting, expansive environment, painterly color grading"
-];
-
-const EXPANSION_AXES = [
-  "camera distance and lens language",
-  "subject emphasis and composition geometry",
-  "lighting setup and contrast style",
-  "environment/time/weather framing",
-  "color palette and visual mood"
-];
-
-const ENABLE_LOCAL_PROMPT_FALLBACK = false;
-
-const tools = [
-  {
-    type: "function",
-    name: "generate_images",
-    description: "Generate a batch of image prompts for the infinite scroll feed. Each prompt will be sent to an image generation model.",
-    parameters: {
-      type: "object",
-      properties: {
-        images: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              prompt: { type: "string", description: "Detailed image generation prompt with style, lighting, composition" },
-              priority: { type: "integer", enum: [1, 2, 3], description: "1=immediate, 2=next, 3=background" }
-            },
-            required: ["prompt", "priority"]
-          }
-        },
-        themeContext: { type: "string", description: "Running theme description for continuity across batches" }
-      },
-      required: ["images"]
-    }
-  }
-];
-
 type SessionContext = {
   socket: WebSocket;
   feed: FeedStore;
   openai: OpenAIResponsesWsClient;
   referenceImageUrl?: string;
   guidanceText?: string;
+  generation: number;
 };
 
 export class SessionOrchestrator {
   private readonly sessions = new Map<string, SessionContext>();
   private readonly feedStores = new Map<string, FeedStore>();
   private readonly fal: FalRealtimeTileClient;
-  private readonly followupFallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor() {
     this.fal = new FalRealtimeTileClient(env.FAL_KEY, 3, this.onFalImage.bind(this), this.onFalError.bind(this));
@@ -100,24 +55,31 @@ export class SessionOrchestrator {
     }
 
     const feed = this.getOrCreateFeed(sessionId);
-    const openai = new OpenAIResponsesWsClient(env.OPENAI_API_KEY, env.OPENAI_MODEL, tools, {
-      generate_images: async (args) => this.handleGenerateImages(sessionId, args)
-    }, (error) => {
-      console.error(`[orchestrator] OpenAI error for ${sessionId}:`, error.message);
-      this.emit(sessionId, { type: "error", message: `OpenAI: ${error.message}` });
-    }, (connected) => {
-      this.emitConnectionStatus(sessionId);
-    });
+    const openai = new OpenAIResponsesWsClient(
+      env.OPENAI_API_KEY,
+      env.OPENAI_MODEL,
+      (prompts) => this.handlePrompts(sessionId, prompts),
+      (error) => {
+        console.error(`[orchestrator] OpenAI error for ${sessionId}:`, error.message);
+        this.emit(sessionId, { type: "error", message: `OpenAI: ${error.message}` });
+      },
+      (connected) => {
+        console.log(`[orchestrator] OpenAI status → ${connected ? "connected" : "disconnected"} for ${sessionId}`);
+        this.emitConnectionStatus(sessionId);
+      }
+    );
     openai.connect();
-    this.sessions.set(sessionId, { socket, feed, openai });
+    this.sessions.set(sessionId, { socket, feed, openai, generation: 0 });
 
     console.log(`[orchestrator] Session ${sessionId} registered`);
     this.emitConnectionStatus(sessionId);
     this.emit(sessionId, { type: "feed_state", feed: feed.getState() });
+
+    // Re-emit after OpenAI has had time to connect (guard against missed callback)
+    setTimeout(() => this.emitConnectionStatus(sessionId), 3000);
   }
 
   unregisterSession(sessionId: string) {
-    this.clearFollowupFallback(sessionId);
     const session = this.sessions.get(sessionId);
     if (session) {
       session.openai.destroy();
@@ -132,6 +94,34 @@ export class SessionOrchestrator {
 
     if (event.type === "session_init") {
       this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
+      return;
+    }
+
+    if (event.type === "reset_feed") {
+      session.generation += 1;
+      session.feed.reset("");
+      session.referenceImageUrl = undefined;
+      session.guidanceText = undefined;
+      // Kill the current OpenAI connection so pending responses are discarded
+      session.openai.destroy();
+      const openai = new OpenAIResponsesWsClient(
+        env.OPENAI_API_KEY,
+        env.OPENAI_MODEL,
+        (prompts) => this.handlePrompts(sessionId, prompts),
+        (error) => {
+          console.error(`[orchestrator] OpenAI error for ${sessionId}:`, error.message);
+          this.emit(sessionId, { type: "error", message: `OpenAI: ${error.message}` });
+        },
+        (connected) => {
+          console.log(`[orchestrator] OpenAI status → ${connected ? "connected" : "disconnected"} for ${sessionId}`);
+          this.emitConnectionStatus(sessionId);
+        }
+      );
+      openai.connect();
+      session.openai = openai;
+      console.log(`[orchestrator] Feed reset for ${sessionId}, generation=${session.generation}`);
+      this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
+      this.emitConnectionStatus(sessionId);
       return;
     }
 
@@ -154,7 +144,6 @@ export class SessionOrchestrator {
           `Generate 3 transformation prompts for the user's reference image.
 Direction: "${event.text}"
 Each prompt transforms the uploaded photo. Write 1-2 sentence prompts starting with "Turn this into..." or "Restyle as...".
-Call generate_images once with 3 prompts.
 ${diversityHint}`,
           SYSTEM_PROMPT
         );
@@ -184,7 +173,6 @@ Theme: "${theme}". We already have ${imageCount} variations.
 Each prompt transforms the SAME reference photo with a new artistic treatment.
 Write short prompts (1-2 sentences) starting with "Turn this into..." or "Restyle as...".
 Every prompt must be a distinctly different visual treatment from prior ones.
-Call generate_images exactly once.
 ${diversityHint}`,
           SYSTEM_PROMPT
         );
@@ -196,56 +184,37 @@ ${diversityHint}`,
     }
   }
 
-  private async handleGenerateImages(sessionId: string, args: unknown) {
-    this.clearFollowupFallback(sessionId);
-    const parsed = GenerateImagesToolSchema.safeParse(args);
-    if (!parsed.success) {
-      console.error("[orchestrator] Invalid generate_images:", parsed.error.message);
-      this.emit(sessionId, { type: "error", message: "Invalid generate_images payload from LLM" });
-      return;
-    }
+  private handlePrompts(sessionId: string, prompts: string[]) {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    if (parsed.data.themeContext) {
-      session.feed.setTheme(parsed.data.themeContext);
-    }
+    console.log(`[orchestrator] Received ${prompts.length} prompts from OpenAI, ref=${Boolean(session.referenceImageUrl)}`);
 
-    console.log(`[orchestrator] generate_images: ${parsed.data.images.length} images, ref=${Boolean(session.referenceImageUrl)}`);
-    for (const img of parsed.data.images) {
-      console.log(`[orchestrator]   prompt: "${img.prompt.slice(0, 120)}..." prio=${img.priority}`);
-    }
-
-    if (parsed.data.images.length === 0) {
-      this.emit(sessionId, {
-        type: "error",
-        message: "OpenAI returned an empty prompt batch. Please retry."
-      });
+    if (prompts.length === 0) {
+      this.emit(sessionId, { type: "error", message: "OpenAI returned no prompts. Please retry." });
       return;
     }
 
-    const indices: number[] = [];
     const seenPrompts = new Set(
       session.feed.getState().images.map((img) => this.normalizePrompt(img.prompt))
     );
 
-    for (const img of parsed.data.images) {
-      const uniquePrompt = this.ensureUniquePrompt(img.prompt, seenPrompts, session.feed.imageCount() + indices.length);
+    for (let i = 0; i < prompts.length; i++) {
+      const uniquePrompt = this.ensureUniquePrompt(prompts[i], seenPrompts, session.feed.imageCount() + i);
       const expandedPrompt = this.deLiteralizePrompt(uniquePrompt, session.guidanceText);
-      const slot = session.feed.allocateSlot(expandedPrompt);
-      indices.push(slot.index);
+      console.log(`[orchestrator]   prompt: "${expandedPrompt.slice(0, 120)}..."`);
 
+      const slot = session.feed.allocateSlot(expandedPrompt);
       this.emit(sessionId, { type: "image_status", index: slot.index, status: "generating" });
 
-      const job: FalImageJob = {
+      this.fal.submit({
         sessionId,
         index: slot.index,
         prompt: expandedPrompt,
-        priority: img.priority,
+        priority: 1,
         referenceImageUrl: session.referenceImageUrl,
         seed: Math.floor(Math.random() * 1_000_000) + slot.index
-      };
-      this.fal.submit(job);
+      });
     }
 
     this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
@@ -367,49 +336,6 @@ ${diversityHint}`,
     this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
   }
 
-  private scheduleFollowupFallback(sessionId: string, theme: string, count = 5, baselineCount = 0) {
-    this.clearFollowupFallback(sessionId);
-    const timer = setTimeout(() => {
-      const session = this.sessions.get(sessionId);
-      if (!session) return;
-      // Only fallback if no new slots were allocated since this request.
-      if (session.feed.imageCount() <= baselineCount) {
-        console.warn(`[orchestrator] OpenAI follow-up timeout for ${sessionId}; using fallback prompts`);
-        this.submitFallbackBatch(sessionId, theme, count);
-      }
-    }, 8000);
-    this.followupFallbackTimers.set(sessionId, timer);
-  }
-
-  private clearFollowupFallback(sessionId: string) {
-    const timer = this.followupFallbackTimers.get(sessionId);
-    if (timer) {
-      clearTimeout(timer);
-      this.followupFallbackTimers.delete(sessionId);
-    }
-  }
-
-  private submitFallbackBatch(sessionId: string, theme: string, count: number) {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-
-    for (let i = 0; i < count; i += 1) {
-      const prompt = this.deLiteralizePrompt(this.buildFallbackPrompt(theme, i), session.guidanceText ?? theme);
-      const slot = session.feed.allocateSlot(prompt);
-      this.emit(sessionId, { type: "image_status", index: slot.index, status: "generating" });
-      const job: FalImageJob = {
-        sessionId,
-        index: slot.index,
-        prompt,
-        priority: 2,
-        referenceImageUrl: session.referenceImageUrl,
-        seed: Math.floor(Math.random() * 1_000_000) + slot.index
-      };
-      this.fal.submit(job);
-    }
-    this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
-  }
-
   private normalizePrompt(prompt: string): string {
     return prompt.toLowerCase().replace(/\s+/g, " ").trim();
   }
@@ -429,21 +355,6 @@ ${diversityHint}`,
     return candidate;
   }
 
-  private buildFallbackPrompt(theme: string, index: number): string {
-    const modifier = FALLBACK_VARIATIONS[index % FALLBACK_VARIATIONS.length];
-    const axis = EXPANSION_AXES[index % EXPANSION_AXES.length];
-    const concept = this.toConcept(theme);
-    const sceneTemplates = [
-      `A high-impact hero composition centered on ${concept}, with one dominant subject, strong visual hierarchy, and clean negative space for optional title text`,
-      `Dynamic mid-action scene expressing ${concept}, with layered depth from foreground to background and a clear focal point`,
-      `Cinematic wide frame interpreting ${concept} in a fresh setting, combining environmental storytelling with a readable central subject`,
-      `Editorial-style close-up built around ${concept}, emphasizing texture, expression, and controlled background separation`,
-      `Bold concept-art interpretation of ${concept}, with graphic shape language, intentional contrast, and clear composition geometry`
-    ];
-    const base = sceneTemplates[index % sceneTemplates.length];
-    return `${base}. Focus on ${axis}. ${modifier}.`;
-  }
-
   private deLiteralizePrompt(prompt: string, guidanceText?: string): string {
     if (!guidanceText) return prompt;
     const guidance = guidanceText.trim();
@@ -453,17 +364,6 @@ ${diversityHint}`,
     const regex = new RegExp(escaped, "ig");
     const replaced = prompt.replace(regex, "the core concept");
     return replaced.replace(/\s+/g, " ").trim();
-  }
-
-  private toConcept(guidanceText: string): string {
-    const cleaned = guidanceText
-      .toLowerCase()
-      .replace(/["']/g, "")
-      .replace(/\b(ideas?|idea|for|about|please|generate|make|create|image|images|prompt|prompts)\b/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!cleaned) return "the user's creative direction";
-    return cleaned;
   }
 
   private emit(sessionId: string, event: ServerEvent) {

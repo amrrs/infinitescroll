@@ -42,10 +42,16 @@ export const LoadMoreEventSchema = z.object({
 });
 export type LoadMoreEvent = z.infer<typeof LoadMoreEventSchema>;
 
+export const ResetFeedEventSchema = z.object({
+  type: z.literal("reset_feed")
+});
+export type ResetFeedEvent = z.infer<typeof ResetFeedEventSchema>;
+
 export const ClientEventSchema = z.discriminatedUnion("type", [
   SessionInitEventSchema,
   UserPromptEventSchema,
-  LoadMoreEventSchema
+  LoadMoreEventSchema,
+  ResetFeedEventSchema
 ]);
 export type ClientEvent = z.infer<typeof ClientEventSchema>;
 

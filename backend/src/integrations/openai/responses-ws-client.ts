@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 
-type ToolHandler = (args: unknown, callId: string) => Promise<void> | void;
+type PromptsHandler = (prompts: string[]) => void;
 type ErrorHandler = (error: Error) => void;
 type StatusChangeHandler = (connected: boolean) => void;
 
@@ -12,6 +12,23 @@ type QueueItem = {
 
 const OPENAI_WS_URL = "wss://api.openai.com/v1/responses";
 const RECONNECT_DELAY_MS = 3000;
+
+const PROMPTS_SCHEMA = {
+  type: "json_schema" as const,
+  name: "image_prompts",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      prompts: {
+        type: "array",
+        items: { type: "string" }
+      }
+    },
+    required: ["prompts"],
+    additionalProperties: false
+  }
+};
 
 export class OpenAIResponsesWsClient {
   private ws: WebSocket | null = null;
@@ -27,8 +44,7 @@ export class OpenAIResponsesWsClient {
   constructor(
     private readonly apiKey: string | undefined,
     private readonly model: string,
-    private readonly tools: unknown[],
-    private readonly handlers: Record<string, ToolHandler>,
+    private readonly onPrompts: PromptsHandler,
     private readonly onError?: ErrorHandler,
     private readonly onStatusChange?: StatusChangeHandler
   ) {}
@@ -99,7 +115,7 @@ export class OpenAIResponsesWsClient {
       type: "response.create",
       model: this.model,
       instructions,
-      tools: this.tools,
+      text: { format: PROMPTS_SCHEMA },
       input: [
         {
           type: "message",
@@ -193,23 +209,25 @@ export class OpenAIResponsesWsClient {
     if (eventType !== "response.output_item.done") return;
 
     const item = event.item as Record<string, unknown> | undefined;
-    if (!item || item.type !== "function_call") return;
-    const toolName = item.name as string;
-    const handler = this.handlers[toolName];
-    if (!handler) {
-      console.warn("[openai-ws] No handler for tool:", toolName);
-      return;
-    }
+    if (!item) return;
 
-    let args: unknown = {};
+    const content = item.content as Array<Record<string, unknown>> | undefined;
+    if (!content || content.length === 0) return;
+
+    const textPart = content.find((c) => c.type === "output_text");
+    if (!textPart || typeof textPart.text !== "string") return;
+
     try {
-      args = JSON.parse((item.arguments as string) ?? "{}");
+      const parsed = JSON.parse(textPart.text);
+      if (Array.isArray(parsed.prompts) && parsed.prompts.length > 0) {
+        console.log(`[openai-ws] Parsed ${parsed.prompts.length} prompts from structured output`);
+        this.onPrompts(parsed.prompts.filter((p: unknown) => typeof p === "string" && p.trim().length > 0));
+      } else {
+        console.warn("[openai-ws] Structured output had no prompts:", textPart.text.slice(0, 200));
+      }
     } catch {
-      args = {};
+      console.error("[openai-ws] Failed to parse structured output:", textPart.text.slice(0, 200));
     }
-
-    console.log("[openai-ws] Tool call:", toolName, "callId:", item.call_id);
-    await handler(args, item.call_id as string);
   }
 
   private scheduleLifetimeRotation(delayMs: number) {

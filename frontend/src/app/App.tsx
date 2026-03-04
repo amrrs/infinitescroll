@@ -211,11 +211,13 @@ export const App = () => {
         if (!disposed) {
           setWsStatus("disconnected");
           setServices({ openai: "disconnected", fal: "unavailable" });
-          reconnectTimer = setTimeout(connect, 2000);
+          reconnectTimer = setTimeout(connect, 1500);
         }
       };
 
-      ws.onerror = () => {};
+      ws.onerror = () => {
+        console.warn("[ws] Connection error, will retry on close");
+      };
     }
 
     connect();

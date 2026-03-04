@@ -658,7 +658,6 @@ body { overflow: hidden; }
 .feed-image {
   width: 100%;
   display: block;
-  object-fit: cover;
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.6) inset,
@@ -719,31 +718,10 @@ body { overflow: hidden; }
   100% { transform: translateY(0); }
 }
 
-.feed-image-wrap.aspect-wide .feed-image,
-.feed-image-wrap.aspect-wide .feed-placeholder {
-  aspect-ratio: 16 / 9;
-}
-
-.feed-image-wrap.aspect-square .feed-image,
-.feed-image-wrap.aspect-square .feed-placeholder {
-  aspect-ratio: 1 / 1;
-}
-
-.feed-image-wrap.aspect-tall .feed-image,
-.feed-image-wrap.aspect-tall .feed-placeholder {
-  aspect-ratio: 4 / 5;
-}
-
-.feed-image-wrap.aspect-cinema .feed-image,
-.feed-image-wrap.aspect-cinema .feed-placeholder {
-  aspect-ratio: 21 / 9;
-}
-
-.feed-image-wrap.aspect-cinema .feed-image,
-.feed-image-wrap.aspect-cinema .feed-placeholder {
-  border-left-width: 0;
-  border-right-width: 0;
-}
+.feed-image-wrap.aspect-wide .feed-placeholder { aspect-ratio: 16 / 9; }
+.feed-image-wrap.aspect-square .feed-placeholder { aspect-ratio: 1 / 1; }
+.feed-image-wrap.aspect-tall .feed-placeholder { aspect-ratio: 4 / 5; }
+.feed-image-wrap.aspect-cinema .feed-placeholder { aspect-ratio: 21 / 9; }
 
 .feed-placeholder {
   width: 100%;
