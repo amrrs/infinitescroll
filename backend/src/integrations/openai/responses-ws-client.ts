@@ -17,14 +17,12 @@ export class OpenAIResponsesWsClient {
   private ws: WebSocket | null = null;
   private readonly queue: QueueItem[] = [];
   private inFlight = false;
-  private lastResponseId: string | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private lifetimeTimer: NodeJS.Timeout | null = null;
   private destroyed = false;
 
   private messageQueue: string[] = [];
   private processingMessages = false;
-  private pendingToolOutputs: Array<{ type: string; call_id: string; output: string }> = [];
 
   constructor(
     private readonly apiKey: string | undefined,
@@ -93,7 +91,6 @@ export class OpenAIResponsesWsClient {
       item.reject(new Error("Client destroyed"));
     }
     this.queue.length = 0;
-    this.pendingToolOutputs.length = 0;
   }
 
   async enqueueUserMessage(text: string, instructions: string): Promise<void> {
@@ -114,14 +111,6 @@ export class OpenAIResponsesWsClient {
     return this.enqueue(payload);
   }
 
-  enqueueFunctionOutput(callId: string, output: Record<string, unknown>): void {
-    this.pendingToolOutputs.push({
-      type: "function_call_output",
-      call_id: callId,
-      output: JSON.stringify(output)
-    });
-  }
-
   private enqueue(payload: Record<string, unknown>): Promise<void> {
     return new Promise((resolve, reject) => {
       this.queue.push({ payload, resolve, reject });
@@ -135,12 +124,8 @@ export class OpenAIResponsesWsClient {
     if (!next) return;
     this.inFlight = true;
 
-    if (this.lastResponseId) {
-      next.payload.previous_response_id = this.lastResponseId;
-    }
-
     const jsonPayload = JSON.stringify(next.payload);
-    console.log("[openai-ws] Sending:", next.payload.type, "prevId:", this.lastResponseId?.slice(-12) ?? "none");
+    console.log("[openai-ws] Sending:", next.payload.type);
 
     this.ws.send(jsonPayload, (err) => {
       if (err) {
@@ -189,10 +174,9 @@ export class OpenAIResponsesWsClient {
     }
 
     if (eventType === "response.completed") {
-      const response = event.response as Record<string, unknown> | undefined;
-      this.lastResponseId = (response?.id as string) ?? this.lastResponseId;
-      console.log("[openai-ws] Response completed, id:", this.lastResponseId);
-      this.sendPendingToolOutputs();
+      console.log("[openai-ws] Response completed");
+      this.inFlight = false;
+      this.flushQueue();
       return;
     }
 
@@ -201,7 +185,6 @@ export class OpenAIResponsesWsClient {
       const errDetail = response?.error ?? response?.status_details;
       console.error("[openai-ws] Response failed:", JSON.stringify(errDetail));
       this.onError?.(new Error(`Response failed: ${JSON.stringify(errDetail)}`));
-      this.pendingToolOutputs.length = 0;
       this.inFlight = false;
       this.flushQueue();
       return;
@@ -227,36 +210,6 @@ export class OpenAIResponsesWsClient {
 
     console.log("[openai-ws] Tool call:", toolName, "callId:", item.call_id);
     await handler(args, item.call_id as string);
-  }
-
-  private sendPendingToolOutputs() {
-    if (this.pendingToolOutputs.length === 0) {
-      this.inFlight = false;
-      this.flushQueue();
-      return;
-    }
-
-    const outputs = this.pendingToolOutputs.splice(0);
-    console.log(`[openai-ws] Sending ${outputs.length} tool output(s) together`);
-
-    const payload: Record<string, unknown> = {
-      type: "response.create",
-      model: this.model,
-      tools: this.tools,
-      input: outputs
-    };
-
-    // Tool outputs MUST be sent before any queued user messages.
-    // Use unshift so they jump ahead of load_more / user_prompt payloads
-    // that may have been enqueued while we were waiting for OpenAI.
-    const item: QueueItem = {
-      payload,
-      resolve: () => {},
-      reject: () => {}
-    };
-    this.queue.unshift(item);
-    this.inFlight = false;
-    this.flushQueue();
   }
 
   private scheduleLifetimeRotation(delayMs: number) {

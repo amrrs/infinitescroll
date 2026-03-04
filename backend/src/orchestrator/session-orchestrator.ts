@@ -101,7 +101,7 @@ export class SessionOrchestrator {
 
     const feed = this.getOrCreateFeed(sessionId);
     const openai = new OpenAIResponsesWsClient(env.OPENAI_API_KEY, env.OPENAI_MODEL, tools, {
-      generate_images: async (args, callId) => this.handleGenerateImages(sessionId, args, callId)
+      generate_images: async (args) => this.handleGenerateImages(sessionId, args)
     }, (error) => {
       console.error(`[orchestrator] OpenAI error for ${sessionId}:`, error.message);
       this.emit(sessionId, { type: "error", message: `OpenAI: ${error.message}` });
@@ -171,14 +171,15 @@ ${diversityHint}`,
         this.emit(sessionId, { type: "error", message: "Send a prompt first" });
         return;
       }
+
+      // Fire 2 immediate images so users see progress while OpenAI thinks
+      this.submitImmediateLoadMore(sessionId, theme);
+
       const imageCount = session.feed.imageCount();
       const diversityHint = this.buildDiversityHint(session.feed);
-      if (ENABLE_LOCAL_PROMPT_FALLBACK) {
-        this.scheduleFollowupFallback(sessionId, theme, event.count, session.feed.imageCount());
-      }
       try {
         await session.openai.enqueueUserMessage(
-          `Generate ${event.count} more transformation prompts for the user's reference image.
+          `Generate 3 more transformation prompts for the user's reference image.
 Theme: "${theme}". We already have ${imageCount} variations.
 Each prompt transforms the SAME reference photo with a new artistic treatment.
 Write short prompts (1-2 sentences) starting with "Turn this into..." or "Restyle as...".
@@ -195,7 +196,7 @@ ${diversityHint}`,
     }
   }
 
-  private async handleGenerateImages(sessionId: string, args: unknown, callId: string) {
+  private async handleGenerateImages(sessionId: string, args: unknown) {
     this.clearFollowupFallback(sessionId);
     const parsed = GenerateImagesToolSchema.safeParse(args);
     if (!parsed.success) {
@@ -216,25 +217,10 @@ ${diversityHint}`,
     }
 
     if (parsed.data.images.length === 0) {
-      if (ENABLE_LOCAL_PROMPT_FALLBACK) {
-        const theme = session.feed.getState().theme;
-        this.submitFallbackBatch(sessionId, theme, 5);
-        session.openai.enqueueFunctionOutput(callId, {
-          status: "accepted",
-          queued: 5,
-          mode: "fallback"
-        });
-      } else {
-        this.emit(sessionId, {
-          type: "error",
-          message: "OpenAI returned an empty prompt batch. Please retry."
-        });
-        session.openai.enqueueFunctionOutput(callId, {
-          status: "rejected",
-          queued: 0,
-          mode: "empty_openai_batch"
-        });
-      }
+      this.emit(sessionId, {
+        type: "error",
+        message: "OpenAI returned an empty prompt batch. Please retry."
+      });
       return;
     }
 
@@ -262,14 +248,7 @@ ${diversityHint}`,
       this.fal.submit(job);
     }
 
-    // Send full state so frontend gets prompt text for all slots
     this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
-
-    session.openai.enqueueFunctionOutput(callId, {
-      status: "accepted",
-      queued: indices.length,
-      indices
-    });
   }
 
   private onFalImage(job: FalImageJob, imageData: string) {
@@ -337,6 +316,42 @@ ${diversityHint}`,
     ];
 
     for (const prompt of immediatePrompts) {
+      const slot = session.feed.allocateSlot(prompt);
+      this.emit(sessionId, { type: "image_status", index: slot.index, status: "generating" });
+      this.fal.submit({
+        sessionId,
+        index: slot.index,
+        prompt,
+        priority: 1,
+        referenceImageUrl: session.referenceImageUrl,
+        seed: Math.floor(Math.random() * 1_000_000) + slot.index
+      });
+    }
+
+    this.emit(sessionId, { type: "feed_state", feed: session.feed.getState() });
+  }
+
+  private submitImmediateLoadMore(sessionId: string, theme: string) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.referenceImageUrl) return;
+
+    const styleAxes = [
+      "vintage film photography with grain, warm faded tones, and soft vignetting",
+      "bold pop-art graphic style with halftone dots, saturated primaries, and thick outlines",
+      "ethereal double-exposure blending nature elements with dreamlike translucency",
+      "noir charcoal sketch with deep shadows, sharp highlights, and crosshatching",
+      "glitch-art distortion with RGB channel splits, scan lines, and data-moshing",
+      "miniature tilt-shift effect with selective focus and saturated toy-like colors",
+      "watercolor wash with soft bleeding edges, translucent layers, and visible brush strokes",
+      "infrared photography with magenta foliage, milky-white skies, and surreal contrast"
+    ];
+    const baseIdx = session.feed.imageCount();
+    const prompts = [
+      `Turn this into ${styleAxes[(baseIdx + 0) % styleAxes.length]}, guided by: ${theme}`,
+      `Restyle as ${styleAxes[(baseIdx + 1) % styleAxes.length]}, inspired by: ${theme}`
+    ];
+
+    for (const prompt of prompts) {
       const slot = session.feed.allocateSlot(prompt);
       this.emit(sessionId, { type: "image_status", index: slot.index, status: "generating" });
       this.fal.submit({

@@ -268,19 +268,33 @@ export const App = () => {
       setReferenceImage(null);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : null;
-      setReferenceImage(result);
+    const MAX_DIM = 512;
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > MAX_DIM || height > MAX_DIM) {
+        const scale = MAX_DIM / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0, width, height);
+      const compressed = canvas.toDataURL("image/jpeg", 0.7);
+      setReferenceImage(compressed);
+      URL.revokeObjectURL(img.src);
     };
-    reader.readAsDataURL(file);
+    img.src = URL.createObjectURL(file);
   }, []);
 
   const handleLoadMore = useCallback(() => {
     if (loading || loadCooldown.current) return;
     loadCooldown.current = true;
     setLoading(true);
-    const sent = safeSend({ type: "load_more", count: 6 });
+    const sent = safeSend({ type: "load_more", count: 5 });
     if (!sent) {
       setLoading(false);
       loadCooldown.current = false;
